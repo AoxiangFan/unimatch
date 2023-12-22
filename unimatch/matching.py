@@ -1,11 +1,14 @@
 import torch
 import torch.nn.functional as F
 
-from .geometry import coords_grid, generate_window_grid, normalize_coords
+from .geometry import coords_grid, generate_window_grid, normalize_coords, coordinate_mapping
+from einops import (rearrange, reduce, repeat)
+
+import sys
 
 
-def global_correlation_softmax(feature0, feature1,
-                               pred_bidir_flow=False,
+def global_correlation_softmax(feature0, feature1, basis,
+                               pred_bidir_flow=False, 
                                ):
     # global correlation
     b, c, h, w = feature0.shape
@@ -30,13 +33,16 @@ def global_correlation_softmax(feature0, feature1,
 
     correspondence = torch.matmul(prob, grid).view(b, h, w, 2).permute(0, 3, 1, 2)  # [B, 2, H, W]
 
+    grid_embedding = coordinate_mapping(grid, basis, h, w)
+    correspondence_embedding = torch.matmul(prob, grid_embedding).view(b, h, w, -1).permute(0, 3, 1, 2)
+
     # when predicting bidirectional flow, flow is the concatenation of forward flow and backward flow
     flow = correspondence - init_grid
 
-    return flow, prob
+    return correspondence_embedding, prob
 
 
-def local_correlation_softmax(feature0, feature1, local_radius,
+def local_correlation_softmax(feature0, feature1, local_radius, correspondence_init, basis,
                               padding_mode='zeros',
                               ):
     b, c, h, w = feature0.size()
@@ -76,11 +82,22 @@ def local_correlation_softmax(feature0, feature1, local_radius,
 
     correspondence = torch.matmul(prob.unsqueeze(-2), sample_coords_softmax).squeeze(-2).view(
         b, h, w, 2).permute(0, 3, 1, 2)  # [B, 2, H, W]
+    
+    B, HW, R, c = sample_coords_softmax.shape
+    
 
-    flow = correspondence - coords_init
+    correspondence_init = rearrange(correspondence_init, 'B C H W -> B (H W) 1 C')
+
+    grid_embedding = coordinate_mapping(rearrange(correspondence_init + sample_coords_softmax, 'B E R c -> B (E R) c'), basis, h, w)
+    grid_embedding = rearrange(grid_embedding, ' B (E R) c -> B E R c', B=B, E=HW, R=R)
+    # correspondence_embedding = torch.matmul(prob, grid_embedding).view(b, h, w, -1).permute(0, 3, 1, 2)
+    correspondence_embedding = torch.matmul(prob.unsqueeze(-2), grid_embedding).squeeze(-2).view(
+        b, h, w, -1).permute(0, 3, 1, 2)
+
+
     match_prob = prob
 
-    return flow, match_prob
+    return correspondence_embedding, match_prob
 
 
 def local_correlation_with_flow(feature0, feature1,

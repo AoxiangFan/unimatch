@@ -7,7 +7,7 @@
 NUM_GPUS=4
 
 # chairs
-CHECKPOINT_DIR=checkpoints_flow/chairs-gmflow-scale2 && \
+CHECKPOINT_DIR=experiments/embedding_loss/chairs-gmflow-scale2 && \
 mkdir -p ${CHECKPOINT_DIR} && \
 python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
 --launcher pytorch \
@@ -30,12 +30,12 @@ python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=99
 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
 
 # things (our final model is trained for 800K iterations, for ablation study, you can train for 200K)
-CHECKPOINT_DIR=checkpoints_flow/things-gmflow-scale2 && \
+CHECKPOINT_DIR=experiments/embedding_loss/things-gmflow-scale2 && \
 mkdir -p ${CHECKPOINT_DIR} && \
 python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
 --launcher pytorch \
 --checkpoint_dir ${CHECKPOINT_DIR} \
---resume checkpoints_flow/chairs-gmflow-scale2/step_100000.pth \
+--resume experiments/embedding_loss/chairs-gmflow-scale2/step_100000.pth \
 --stage things \
 --batch_size 8 \
 --val_dataset things sintel kitti \
@@ -54,12 +54,12 @@ python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=99
 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
 
 # sintel
-CHECKPOINT_DIR=checkpoints_flow/sintel-gmflow-scale2 && \
+CHECKPOINT_DIR=experiments/embedding_loss/sintel-gmflow-scale2 && \
 mkdir -p ${CHECKPOINT_DIR} && \
 python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
 --launcher pytorch \
 --checkpoint_dir ${CHECKPOINT_DIR} \
---resume checkpoints_flow/things-gmflow-scale2/step_800000.pth \
+--resume experiments/embedding_loss/things-gmflow-scale2/step_800000.pth \
 --stage sintel \
 --batch_size 8 \
 --val_dataset sintel kitti \
@@ -78,12 +78,12 @@ python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=99
 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
 
 # kitti
-CHECKPOINT_DIR=checkpoints_flow/kitti-gmflow-scale2 && \
+CHECKPOINT_DIR=experiments/embedding_loss/kitti-gmflow-scale2 && \
 mkdir -p ${CHECKPOINT_DIR} && \
 python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
 --launcher pytorch \
 --checkpoint_dir ${CHECKPOINT_DIR} \
---resume checkpoints_flow/sintel-gmflow-scale2/step_200000.pth \
+--resume experiments/embedding_loss/sintel-gmflow-scale2/step_200000.pth \
 --stage kitti \
 --batch_size 8 \
 --val_dataset kitti \

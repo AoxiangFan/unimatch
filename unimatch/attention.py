@@ -4,6 +4,8 @@ import torch.nn.functional as F
 
 from .utils import split_feature, merge_splits, split_feature_1d, merge_splits_1d
 
+import sys
+
 
 def single_head_full_attention(q, k, v):
     # q, k, v: [B, L, C]
@@ -217,7 +219,7 @@ class SelfAttnPropagation(nn.Module):
     def forward_local_window_attn(self, feature0, flow,
                                   local_window_radius=1,
                                   ):
-        assert flow.size(1) == 2 or flow.size(1) == 1  # flow or disparity or depth
+        # assert flow.size(1) == 2 or flow.size(1) == 1  # flow or disparity or depth
         assert local_window_radius > 0
 
         b, c, h, w = feature0.size()

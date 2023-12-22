@@ -8,9 +8,23 @@ from .matching import (global_correlation_softmax, local_correlation_softmax, lo
                        global_correlation_softmax_stereo, local_correlation_softmax_stereo,
                        correlation_softmax_depth)
 from .attention import SelfAttnPropagation
-from .geometry import flow_warp, compute_flow_with_depth_pose
+from .geometry import flow_warp, compute_flow_with_depth_pose, coords_grid
 from .reg_refine import BasicUpdateBlock
 from .utils import normalize_img, feature_add_position, upsample_flow_with_mask
+
+import sys
+from einops import (rearrange, reduce, repeat)
+
+class DecoderMLP(nn.Module):
+    def __init__(self, input_dim=128):
+        super(DecoderMLP, self).__init__()
+        self.MLP = nn.Sequential(
+                nn.Linear(input_dim, input_dim), nn.ReLU(inplace=True),
+                nn.Linear(input_dim, input_dim // 2), nn.ReLU(inplace=True),
+                nn.Linear(input_dim // 2, 1), nn.Sigmoid())
+
+    def forward(self, x):
+        return self.MLP(x)
 
 
 class UniMatch(nn.Module):
@@ -44,12 +58,26 @@ class UniMatch(nn.Module):
         # propagation with self-attn
         self.feature_flow_attn = SelfAttnPropagation(in_channels=feature_channels)
 
+
+        coordinate_embedding_decoder = torch.load("/scratch/cvlab/home/afan/projects/unimatch/checkpoints_saved/coordinate_embedding_decoder.pth")
+        self.basis = coordinate_embedding_decoder['basis'].to("cuda")
+        self.embedding_dimension = coordinate_embedding_decoder['embedding_dimension']
+        self.coordinateEmbeddingDecoder = DecoderMLP(input_dim=self.embedding_dimension)
+        self.coordinateEmbeddingDecoder.load_state_dict(coordinate_embedding_decoder['model_state_dict'])
+        for param in self.coordinateEmbeddingDecoder.parameters():
+            param.requires_grad = False
+
         if not self.reg_refine or task == 'depth':
             # convex upsampling simiar to RAFT
             # concat feature0 and low res flow as input
-            self.upsampler = nn.Sequential(nn.Conv2d(2 + feature_channels, 256, 3, 1, 1),
+            # self.upsampler = nn.Sequential(nn.Conv2d(2 + feature_channels, 256, 3, 1, 1),
+            #                                nn.ReLU(inplace=True),
+            #                                nn.Conv2d(256, upsample_factor ** 2 * 9, 1, 1, 0))
+            
+            self.upsampler2 = nn.Sequential(nn.Conv2d(self.embedding_dimension * 2 + feature_channels, 256, 3, 1, 1),
                                            nn.ReLU(inplace=True),
                                            nn.Conv2d(256, upsample_factor ** 2 * 9, 1, 1, 0))
+            
             # thus far, all the learnable parameters are task-agnostic
 
         if reg_refine:
@@ -60,7 +88,6 @@ class UniMatch(nn.Module):
                                            flow_dim=2 if task == 'flow' else 1,
                                            bilinear_up=task == 'depth',
                                            )
-
     def extract_feature(self, img0, img1):
         concat = torch.cat((img0, img1), dim=0)  # [2B, C, H, W]
         features = self.backbone(concat)  # list of [2B, C, H, W], resolution from high to low
@@ -87,6 +114,20 @@ class UniMatch(nn.Module):
         else:
             concat = torch.cat((flow, feature), dim=1)
             mask = self.upsampler(concat)
+            up_flow = upsample_flow_with_mask(flow, mask, upsample_factor=self.upsample_factor,
+                                              is_depth=is_depth)
+
+        return up_flow
+    
+    def upsample_embedding(self, flow, feature, bilinear=False, upsample_factor=8,
+                      is_depth=True):
+        if bilinear:
+            multiplier = 1 if is_depth else upsample_factor
+            up_flow = F.interpolate(flow, scale_factor=upsample_factor,
+                                    mode='bilinear', align_corners=True) * multiplier
+        else:
+            concat = torch.cat((flow, feature), dim=1)
+            mask = self.upsampler2(concat)
             up_flow = upsample_flow_with_mask(flow, mask, upsample_factor=self.upsample_factor,
                                               is_depth=is_depth)
 
@@ -118,6 +159,7 @@ class UniMatch(nn.Module):
 
         results_dict = {}
         flow_preds = []
+        correspondence_embedding_preds = []
 
         if task == 'flow':
             # stereo and depth tasks have normalized img in dataloader
@@ -127,6 +169,7 @@ class UniMatch(nn.Module):
         feature0_list, feature1_list = self.extract_feature(img0, img1)  # list of features
 
         flow = None
+        correspondence = None
 
         if task != 'depth':
             assert len(attn_splits_list) == len(corr_radius_list) == len(prop_radius_list) == self.num_scales
@@ -151,7 +194,10 @@ class UniMatch(nn.Module):
 
             if scale_idx > 0:
                 assert task != 'depth'  # not supported for multi-scale depth model
+                correspondence = F.interpolate(correspondence, scale_factor=2, mode='bilinear', align_corners=True) * 2
                 flow = F.interpolate(flow, scale_factor=2, mode='bilinear', align_corners=True) * 2
+
+                
 
             if flow is not None:
                 assert task != 'depth'
@@ -202,46 +248,63 @@ class UniMatch(nn.Module):
             else:
                 if corr_radius == -1:  # global matching
                     if task == 'flow':
-                        flow_pred = global_correlation_softmax(feature0, feature1, pred_bidir_flow)[0]
+                        correspondence_embedding, _ = global_correlation_softmax(feature0, feature1, self.basis, pred_bidir_flow)
                     elif task == 'stereo':
                         flow_pred = global_correlation_softmax_stereo(feature0, feature1)[0]
                     else:
                         raise NotImplementedError
                 else:  # local matching
                     if task == 'flow':
-                        flow_pred = local_correlation_softmax(feature0, feature1, corr_radius)[0]
+                        correspondence_embedding, _ = local_correlation_softmax(feature0, feature1, corr_radius, correspondence, self.basis)
+
                     elif task == 'stereo':
                         flow_pred = local_correlation_softmax_stereo(feature0, feature1, corr_radius)[0]
                     else:
                         raise NotImplementedError
 
             # flow or residual flow
-            flow = flow + flow_pred if flow is not None else flow_pred
+            # flow = flow + flow_pred if flow is not None else flow_pred
+                
 
             if task == 'stereo':
                 flow = flow.clamp(min=0)  # positive disparity
 
             # upsample to the original resolution for supervison at training time only
             if self.training:
-                flow_bilinear = self.upsample_flow(flow, None, bilinear=True, upsample_factor=upsample_factor,
-                                                   is_depth=task == 'depth')
-                flow_preds.append(flow_bilinear)
+                # flow_bilinear = self.upsample_flow(flow, None, bilinear=True, upsample_factor=upsample_factor,
+                #                                    is_depth=task == 'depth')
+                # flow_preds.append(flow_bilinear)
+
+                correspondence_embedding_bilinear = self.upsample_embedding(correspondence_embedding, None, bilinear=True, upsample_factor=upsample_factor)
+                
+                correspondence_embedding_preds.append(correspondence_embedding_bilinear)
 
             # flow propagation with self-attn
             if (pred_bidir_flow or pred_bidir_depth) and scale_idx == 0:
                 feature0 = torch.cat((feature0, feature1), dim=0)  # [2*B, C, H, W] for propagation
 
-            flow = self.feature_flow_attn(feature0, flow.detach(),
+            # flow = self.feature_flow_attn(feature0, flow.detach(),
+            #                               local_window_attn=prop_radius > 0,
+            #                               local_window_radius=prop_radius,
+            #                               )
+            
+            correspondence_embedding = self.feature_flow_attn(feature0, correspondence_embedding.detach(),
                                           local_window_attn=prop_radius > 0,
                                           local_window_radius=prop_radius,
                                           )
 
             # bilinear exclude the last one
             if self.training and scale_idx < self.num_scales - 1:
-                flow_up = self.upsample_flow(flow, feature0, bilinear=True,
-                                             upsample_factor=upsample_factor,
-                                             is_depth=task == 'depth')
-                flow_preds.append(flow_up)
+                # flow_up = self.upsample_flow(flow, feature0, bilinear=True,
+                #                              upsample_factor=upsample_factor,
+                #                              is_depth=task == 'depth')
+                # flow_preds.append(flow_up)
+
+                correspondence_embedding_up = self.upsample_embedding(correspondence_embedding, feature0, bilinear=True,
+                                             upsample_factor=upsample_factor)
+                correspondence_embedding_preds.append(correspondence_embedding_up)
+
+
 
             if scale_idx == self.num_scales - 1:
                 if not self.reg_refine:
@@ -257,9 +320,27 @@ class UniMatch(nn.Module):
                                                           is_depth=True).clamp(min=min_depth, max=max_depth)
                         flow_up = depth_up_pad[:, :1]  # [B, 1, H, W]
                     else:
-                        flow_up = self.upsample_flow(flow, feature0)
+                        # flow_up = self.upsample_flow(flow, feature0)
+                        correspondence_embedding_up = self.upsample_embedding(correspondence_embedding, feature0)
 
-                    flow_preds.append(flow_up)
+                    # flow_preds.append(flow_up)
+                    correspondence_embedding_preds.append(correspondence_embedding_up)
+
+                    B, C, H, W = correspondence_embedding_up.shape
+                    decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 0:64])
+                    decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 64:])
+                    decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
+                    
+                    denorm_factor = torch.tensor([W, H])
+                    denorm_factor = denorm_factor.to(decoded_correspondence.device)
+                    decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
+                    decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
+
+                    init_grid = coords_grid(B, H, W)
+                    flow_preds.append(decoded_correspondence - init_grid.to(decoded_correspondence.device))
+
+
+                    
                 else:
                     # task-specific local regression refinement
                     # supervise current flow
@@ -353,6 +434,24 @@ class UniMatch(nn.Module):
 
                             flow_preds.append(flow_up)
 
+            B, C, H, W = correspondence_embedding.shape
+            decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 0:64])
+            decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 64:])
+            decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
+
+            
+            denorm_factor = torch.tensor([W, H])
+            denorm_factor = denorm_factor.to(decoded_correspondence.device)
+            decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
+            decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
+
+            correspondence = decoded_correspondence.detach()
+
+            init_grid = coords_grid(B, H, W)
+            flow = decoded_correspondence - init_grid.to(correspondence.device)
+
+
+
         if task == 'stereo':
             for i in range(len(flow_preds)):
                 flow_preds[i] = flow_preds[i].squeeze(1)  # [B, H, W]
@@ -363,5 +462,9 @@ class UniMatch(nn.Module):
                 flow_preds[i] = 1. / flow_preds[i].squeeze(1)  # [B, H, W]
 
         results_dict.update({'flow_preds': flow_preds})
+
+        results_dict.update({'correspondence_embedding_preds': correspondence_embedding_preds})
+
+        results_dict.update({'basis': self.basis})
 
         return results_dict

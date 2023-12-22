@@ -140,7 +140,7 @@ class FlowDataset(data.Dataset):
 
 class MpiSintel(FlowDataset):
     def __init__(self, aug_params=None, split='training',
-                 root='datasets/Sintel',
+                 root='/scratch/cvlab/datasets/dataset_OpticalFlow/MPI-Sintel',
                  dstype='clean',
                  load_occlusion=False,
                  ):
@@ -172,7 +172,7 @@ class MpiSintel(FlowDataset):
 
 class FlyingChairs(FlowDataset):
     def __init__(self, aug_params=None, split='train',
-                 root='datasets/FlyingChairs_release/data',
+                 root='/scratch/cvlab/datasets/dataset_OpticalFlow/FlyingChairs_release/data',
                  ):
         super(FlyingChairs, self).__init__(aug_params)
 
@@ -191,7 +191,7 @@ class FlyingChairs(FlowDataset):
 
 class FlyingThings3D(FlowDataset):
     def __init__(self, aug_params=None,
-                 root='datasets/FlyingThings3D',
+                 root='/scratch/cvlab/datasets/dataset_OpticalFlow/FlyingThings3D',
                  dstype='frames_cleanpass',
                  test_set=False,
                  validate_subset=True,
@@ -241,7 +241,7 @@ class FlyingThings3D(FlowDataset):
 
 class VKITTI2(FlowDataset):
     def __init__(self, aug_params=None,
-                 root='datasets/VKITTI2',
+                 root='/scratch/cvlab/datasets/dataset_OpticalFlow/VirtualKITTI2',
                  ):
         super(VKITTI2, self).__init__(aug_params, sparse=True, vkitti2=True,
                                       )
@@ -277,7 +277,7 @@ class VKITTI2(FlowDataset):
 
 class KITTI(FlowDataset):
     def __init__(self, aug_params=None, split='training',
-                 root='datasets/KITTI',
+                 root='/scratch/cvlab/datasets/dataset_OpticalFlow/KITTI',
                  ):
         super(KITTI, self).__init__(aug_params, sparse=True,
                                     )
@@ -318,7 +318,7 @@ class KITTI12(FlowDataset):
 
 
 class HD1K(FlowDataset):
-    def __init__(self, aug_params=None, root='datasets/HD1K'):
+    def __init__(self, aug_params=None, root='/scratch/cvlab/datasets/dataset_OpticalFlow/HD1K'):
         super(HD1K, self).__init__(aug_params, sparse=True)
 
         seq_ix = 0
