@@ -59,7 +59,7 @@ class UniMatch(nn.Module):
         self.feature_flow_attn = SelfAttnPropagation(in_channels=feature_channels)
 
 
-        coordinate_embedding_decoder = torch.load("/scratch/cvlab/home/afan/projects/unimatch/checkpoints_saved/coordinate_embedding_decoder.pth")
+        coordinate_embedding_decoder = torch.load("/scratch/cvlab/home/afan/projects/unimatch/decoder/color_embedding_decoder.pth")
         self.basis = coordinate_embedding_decoder['basis'].to("cuda")
         self.embedding_dimension = coordinate_embedding_decoder['embedding_dimension']
         self.coordinateEmbeddingDecoder = DecoderMLP(input_dim=self.embedding_dimension)
@@ -327,8 +327,8 @@ class UniMatch(nn.Module):
                     correspondence_embedding_preds.append(correspondence_embedding_up)
 
                     B, C, H, W = correspondence_embedding_up.shape
-                    decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 0:64])
-                    decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 64:])
+                    decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                    decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
                     decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
                     
                     denorm_factor = torch.tensor([W, H])
@@ -435,8 +435,8 @@ class UniMatch(nn.Module):
                             flow_preds.append(flow_up)
 
             B, C, H, W = correspondence_embedding.shape
-            decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 0:64])
-            decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 64:])
+            decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+            decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
             decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
 
             
@@ -445,7 +445,7 @@ class UniMatch(nn.Module):
             decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
             decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
 
-            correspondence = decoded_correspondence.detach()
+            correspondence = decoded_correspondence
 
             init_grid = coords_grid(B, H, W)
             flow = decoded_correspondence - init_grid.to(correspondence.device)

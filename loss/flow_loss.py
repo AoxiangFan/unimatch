@@ -113,8 +113,8 @@ def flow_loss_func2(flow_preds, correspondence_embedding_preds, basis, flow_gt, 
         '5px': (epe > 5).float().mean().item(),
         'embedding_loss0': embedding_loss[0].item(),
         'embedding_loss1': embedding_loss[1].item(),
-        'embedding_loss0': embedding_loss[2].item(),
-        'embedding_loss1': embedding_loss[3].item(),
+        'embedding_loss2': embedding_loss[2].item(),
+        'embedding_loss3': embedding_loss[3].item(),
     }
 
     return flow_loss, metrics, embedding_loss

@@ -87,9 +87,11 @@ def local_correlation_softmax(feature0, feature1, local_radius, correspondence_i
     
 
     correspondence_init = rearrange(correspondence_init, 'B C H W -> B (H W) 1 C')
+    coords_init = rearrange(coords_init, 'B C H W -> B (H W) 1 C')
 
-    grid_embedding = coordinate_mapping(rearrange(correspondence_init + sample_coords_softmax, 'B E R c -> B (E R) c'), basis, h, w)
+    grid_embedding = coordinate_mapping(rearrange(correspondence_init + sample_coords_softmax - coords_init, 'B E R c -> B (E R) c'), basis, h, w)
     grid_embedding = rearrange(grid_embedding, ' B (E R) c -> B E R c', B=B, E=HW, R=R)
+
     # correspondence_embedding = torch.matmul(prob, grid_embedding).view(b, h, w, -1).permute(0, 3, 1, 2)
     correspondence_embedding = torch.matmul(prob.unsqueeze(-2), grid_embedding).squeeze(-2).view(
         b, h, w, -1).permute(0, 3, 1, 2)
