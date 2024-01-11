@@ -73,12 +73,12 @@ def flow_loss_func(flow_preds, flow_gt, valid,
 
 
 
-def flow_loss_func2(flow_preds, correspondence_embedding_preds, basis, flow_gt, valid,
+def flow_loss_func2(flow_preds, correspondence_preds, embedding_preds_A, embedding_preds_B, window_preds, basis, flow_gt, valid,
                    gamma=0.9,
                    max_flow=400,
                    **kwargs,
                    ):
-    n_predictions = len(correspondence_embedding_preds)
+    n_predictions = len(flow_preds)
 
     # exlude invalid pixels and extremely large diplacements
     mag = torch.sum(flow_gt ** 2, dim=1).sqrt()  # [B, H, W]
@@ -90,12 +90,19 @@ def flow_loss_func2(flow_preds, correspondence_embedding_preds, basis, flow_gt, 
     correspondence_gt = init_grid + flow_gt
     correspondence_gt_embedding = rearrange(coordinate_mapping(rearrange(correspondence_gt, 'B C H W -> B (H W) C'), basis, h, w), 'B (H W) C -> B C H W', H=h, W=w)
     
-
     embedding_loss = []
     for i in range(n_predictions):
         i_weight = gamma ** (n_predictions - i - 1)
-        i_embedding_loss = (2.0 - torch.sum(correspondence_embedding_preds[i] * correspondence_gt_embedding, dim=1))
-        embedding_loss.append(i_weight * (valid[:, None] * i_embedding_loss).mean())
+
+        if i == 0:
+            correspondence_gt_embedding = rearrange(coordinate_mapping(rearrange(correspondence_gt, 'B C H W -> B (H W) C'), basis, h, w), 'B (H W) C -> B C H W', H=h, W=w)
+            i_embedding_loss = ((2.0 - torch.sum(embedding_preds_A[i] * correspondence_gt_embedding, dim=1)) + (2.0 - torch.sum(embedding_preds_B[i] * correspondence_gt_embedding, dim=1))) / 4.0
+            embedding_loss.append(i_weight * (valid[:, None] * i_embedding_loss).mean())
+        else:
+            flow_gt = correspondence_gt - correspondence_preds[i-1]
+            flow_gt_embedding = rearrange(coordinate_mapping(rearrange(flow_gt + window_preds[i-1][0], 'B C H W -> B (H W) C'), basis, window_preds[i-1][1], window_preds[i-1][2]), 'B (H W) C -> B C H W', H=h, W=w)
+            i_embedding_loss = ((2.0 - torch.sum(embedding_preds_A[i] * flow_gt_embedding, dim=1)) + (2.0 - torch.sum(embedding_preds_B[i] * flow_gt_embedding, dim=1))) / 4.0
+            embedding_loss.append(i_weight * 0.001 * (valid[:, None] * i_embedding_loss).mean())
 
     flow_loss = sum(embedding_loss)
 
@@ -113,8 +120,6 @@ def flow_loss_func2(flow_preds, correspondence_embedding_preds, basis, flow_gt, 
         '5px': (epe > 5).float().mean().item(),
         'embedding_loss0': embedding_loss[0].item(),
         'embedding_loss1': embedding_loss[1].item(),
-        'embedding_loss2': embedding_loss[2].item(),
-        'embedding_loss3': embedding_loss[3].item(),
     }
 
     return flow_loss, metrics, embedding_loss

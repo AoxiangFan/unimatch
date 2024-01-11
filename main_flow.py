@@ -426,10 +426,13 @@ def main(args):
                                  )
 
             flow_preds = results_dict['flow_preds']
-            correspondence_embedding_preds = results_dict['correspondence_embedding_preds']
+            correspondence_preds = results_dict['correspondence_preds']
+            embedding_preds_A = results_dict['embedding_preds_A']
+            embedding_preds_B = results_dict['embedding_preds_B']
+            window_preds = results_dict['window_preds']
             basis = results_dict['basis']
 
-            loss, metrics, sublosses = flow_loss_func2(flow_preds, correspondence_embedding_preds, basis, flow_gt, valid,
+            loss, metrics, sublosses = flow_loss_func2(flow_preds, correspondence_preds, embedding_preds_A, embedding_preds_B, window_preds, basis, flow_gt, valid,
                                            gamma=args.gamma,
                                            max_flow=args.max_flow,
                                            )

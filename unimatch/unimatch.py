@@ -158,8 +158,11 @@ class UniMatch(nn.Module):
             assert self.num_scales == 1  # multi-scale depth model is not supported yet
 
         results_dict = {}
+        correspondence_preds = []
         flow_preds = []
-        correspondence_embedding_preds = []
+        embedding_preds_A = []
+        embedding_preds_B = []
+        window_preds = []
 
         if task == 'flow':
             # stereo and depth tasks have normalized img in dataloader
@@ -255,8 +258,7 @@ class UniMatch(nn.Module):
                         raise NotImplementedError
                 else:  # local matching
                     if task == 'flow':
-                        correspondence_embedding, _ = local_correlation_softmax(feature0, feature1, corr_radius, correspondence, self.basis)
-
+                        flow_embedding, _, (local_radius, local_h, local_w) = local_correlation_softmax(feature0, feature1, corr_radius, correspondence, self.basis)
                     elif task == 'stereo':
                         flow_pred = local_correlation_softmax_stereo(feature0, feature1, corr_radius)[0]
                     else:
@@ -274,10 +276,12 @@ class UniMatch(nn.Module):
                 # flow_bilinear = self.upsample_flow(flow, None, bilinear=True, upsample_factor=upsample_factor,
                 #                                    is_depth=task == 'depth')
                 # flow_preds.append(flow_bilinear)
-
-                correspondence_embedding_bilinear = self.upsample_embedding(correspondence_embedding, None, bilinear=True, upsample_factor=upsample_factor)
-                
-                correspondence_embedding_preds.append(correspondence_embedding_bilinear)
+                if corr_radius == -1:
+                    correspondence_embedding_bilinear = self.upsample_embedding(correspondence_embedding, None, bilinear=True, upsample_factor=upsample_factor)
+                    embedding_preds_A.append(correspondence_embedding_bilinear)
+                else:
+                    flow_embedding_bilinear = self.upsample_embedding(flow_embedding, None, bilinear=True, upsample_factor=upsample_factor)
+                    embedding_preds_A.append(flow_embedding_bilinear)
 
             # flow propagation with self-attn
             if (pred_bidir_flow or pred_bidir_depth) and scale_idx == 0:
@@ -288,10 +292,17 @@ class UniMatch(nn.Module):
             #                               local_window_radius=prop_radius,
             #                               )
             
-            correspondence_embedding = self.feature_flow_attn(feature0, correspondence_embedding.detach(),
-                                          local_window_attn=prop_radius > 0,
-                                          local_window_radius=prop_radius,
-                                          )
+            if corr_radius == -1:
+                correspondence_embedding = self.feature_flow_attn(feature0, correspondence_embedding.detach(),
+                                            local_window_attn=prop_radius > 0,
+                                            local_window_radius=prop_radius,
+                                            )
+            else:
+                flow_embedding = self.feature_flow_attn(feature0, flow_embedding.detach(),
+                                            local_window_attn=prop_radius > 0,
+                                            local_window_radius=prop_radius,
+                                            )
+
 
             # bilinear exclude the last one
             if self.training and scale_idx < self.num_scales - 1:
@@ -300,11 +311,42 @@ class UniMatch(nn.Module):
                 #                              is_depth=task == 'depth')
                 # flow_preds.append(flow_up)
 
-                correspondence_embedding_up = self.upsample_embedding(correspondence_embedding, feature0, bilinear=True,
-                                             upsample_factor=upsample_factor)
-                correspondence_embedding_preds.append(correspondence_embedding_up)
+                if corr_radius == -1:
+                    correspondence_embedding_up = self.upsample_embedding(correspondence_embedding, feature0, bilinear=True,
+                                                upsample_factor=upsample_factor)
+                    embedding_preds_B.append(correspondence_embedding_up)
 
+                    B, C, H, W = correspondence_embedding_up.shape
+                    decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                    decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
+                    decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
+                    denorm_factor = torch.tensor([W, H])
+                    denorm_factor = denorm_factor.to(decoded_correspondence.device)
+                    decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
+                    decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
+                    correspondence_h = decoded_correspondence
+                    init_grid = coords_grid(B, H, W)
+                    flow_h = decoded_correspondence - init_grid.to(correspondence_h.device)
+                    flow_preds.append(flow_h.detach())
+                    correspondence_preds.append(correspondence_h.detach())
+                    
+                else:
+                    flow_embedding_up = self.upsample_embedding(flow_embedding, feature0, bilinear=True,
+                                                upsample_factor=upsample_factor)
+                    embedding_preds_B.append(flow_embedding_up)
 
+                    B, C, H, W = flow_embedding_up.shape
+                    decoded_flow_1 = self.coordinateEmbeddingDecoder(rearrange(flow_embedding, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                    decoded_flow_2 = self.coordinateEmbeddingDecoder(rearrange(flow_embedding, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
+                    decoded_flow = torch.cat((decoded_flow_1, decoded_flow_2), dim=1)
+                    denorm_factor = torch.tensor([local_w * upsample_factor, local_h * upsample_factor])
+                    denorm_factor = denorm_factor.to(decoded_flow.device)
+                    decoded_flow = decoded_flow * denorm_factor[None, :] - local_radius * upsample_factor
+                    decoded_flow = rearrange(decoded_flow, '(B H W) C -> B C H W', B=B, H=H, W=W)
+                    flow_h = decoded_flow
+                    flow_preds.append(flow_preds[-1] + flow_h.detach())
+                    correspondence_preds.append(correspondence_preds[-1] + flow_h.detach())
+                    window_preds.append((local_radius * upsample_factor, local_h * upsample_factor, local_w * upsample_factor))
 
             if scale_idx == self.num_scales - 1:
                 if not self.reg_refine:
@@ -321,25 +363,40 @@ class UniMatch(nn.Module):
                         flow_up = depth_up_pad[:, :1]  # [B, 1, H, W]
                     else:
                         # flow_up = self.upsample_flow(flow, feature0)
-                        correspondence_embedding_up = self.upsample_embedding(correspondence_embedding, feature0)
+                        if corr_radius == -1:
+                            correspondence_embedding_up = self.upsample_embedding(correspondence_embedding, feature0)
+                            embedding_preds_B.append(correspondence_embedding_up)
+                            B, C, H, W = correspondence_embedding_up.shape
+                            decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                            decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
+                            decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
+                            denorm_factor = torch.tensor([W, H])
+                            denorm_factor = denorm_factor.to(decoded_correspondence.device)
+                            decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
+                            decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
+                            correspondence_h = decoded_correspondence
+                            init_grid = coords_grid(B, H, W)
+                            flow_h = decoded_correspondence - init_grid.to(correspondence_h.device)
+                            flow_preds.append(flow_h.detach())
+                            correspondence_preds.append(correspondence_h.detach())
+                        else:
+                            flow_embedding_up = self.upsample_embedding(flow_embedding, feature0)
+                            embedding_preds_B.append(flow_embedding_up)
+                            B, C, H, W = flow_embedding_up.shape
+                            decoded_flow_1 = self.coordinateEmbeddingDecoder(rearrange(flow_embedding_up, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                            decoded_flow_2 = self.coordinateEmbeddingDecoder(rearrange(flow_embedding_up, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
+                            decoded_flow = torch.cat((decoded_flow_1, decoded_flow_2), dim=1)
+                            denorm_factor = torch.tensor([local_w * upsample_factor, local_h * upsample_factor])
+                            denorm_factor = denorm_factor.to(decoded_flow.device)
+                            decoded_flow = decoded_flow * denorm_factor[None, :] - local_radius * upsample_factor
+                            decoded_flow = rearrange(decoded_flow, '(B H W) C -> B C H W', B=B, H=H, W=W)
+                            flow_h = decoded_flow
+                            flow_preds.append(flow_preds[-1] + flow_h.detach())
+                            correspondence_preds.append(correspondence_preds[-1] + flow_h.detach())
+                            window_preds.append((local_radius * upsample_factor, local_h * upsample_factor, local_w * upsample_factor))
+
 
                     # flow_preds.append(flow_up)
-                    correspondence_embedding_preds.append(correspondence_embedding_up)
-
-                    B, C, H, W = correspondence_embedding_up.shape
-                    decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
-                    decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding_up, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
-                    decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
-                    
-                    denorm_factor = torch.tensor([W, H])
-                    denorm_factor = denorm_factor.to(decoded_correspondence.device)
-                    decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
-                    decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
-
-                    init_grid = coords_grid(B, H, W)
-                    flow_preds.append(decoded_correspondence - init_grid.to(decoded_correspondence.device))
-
-
                     
                 else:
                     # task-specific local regression refinement
@@ -434,23 +491,34 @@ class UniMatch(nn.Module):
 
                             flow_preds.append(flow_up)
 
-            B, C, H, W = correspondence_embedding.shape
-            decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
-            decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
-            decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
+            if (corr_radius == -1):
+                B, C, H, W = correspondence_embedding.shape
+                decoded_correspondence_1 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                decoded_correspondence_2 = self.coordinateEmbeddingDecoder(rearrange(correspondence_embedding, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
+                decoded_correspondence = torch.cat((decoded_correspondence_1, decoded_correspondence_2), dim=1)
+                denorm_factor = torch.tensor([W, H])
+                denorm_factor = denorm_factor.to(decoded_correspondence.device)
+                decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
+                decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
+                correspondence = decoded_correspondence
+                init_grid = coords_grid(B, H, W)
+                flow = decoded_correspondence - init_grid.to(correspondence.device)
+                flow = flow.detach()
+                correspondence = correspondence.detach()
 
-            
-            denorm_factor = torch.tensor([W, H])
-            denorm_factor = denorm_factor.to(decoded_correspondence.device)
-            decoded_correspondence = decoded_correspondence * denorm_factor[None, :]
-            decoded_correspondence = rearrange(decoded_correspondence, '(B H W) C -> B C H W', B=B, H=H, W=W)
-
-            correspondence = decoded_correspondence
-
-            init_grid = coords_grid(B, H, W)
-            flow = decoded_correspondence - init_grid.to(correspondence.device)
-
-
+            else:
+                B, C, H, W = flow_embedding.shape
+                decoded_flow_1 = self.coordinateEmbeddingDecoder(rearrange(flow_embedding, 'B C H W -> (B H W) C')[:, 0:self.embedding_dimension])
+                decoded_flow_2 = self.coordinateEmbeddingDecoder(rearrange(flow_embedding, 'B C H W -> (B H W) C')[:, self.embedding_dimension:])
+                decoded_flow = torch.cat((decoded_flow_1, decoded_flow_2), dim=1)
+                denorm_factor = torch.tensor([local_w, local_h])
+                denorm_factor = denorm_factor.to(decoded_flow.device)
+                decoded_flow = decoded_flow * denorm_factor[None, :] - local_radius
+                decoded_flow = rearrange(decoded_flow, '(B H W) C -> B C H W', B=B, H=H, W=W)
+                correspondence = correspondence + decoded_flow
+                flow = flow + decoded_flow
+                flow = flow.detach()
+                correspondence = correspondence.detach()
 
         if task == 'stereo':
             for i in range(len(flow_preds)):
@@ -462,8 +530,11 @@ class UniMatch(nn.Module):
                 flow_preds[i] = 1. / flow_preds[i].squeeze(1)  # [B, H, W]
 
         results_dict.update({'flow_preds': flow_preds})
+        results_dict.update({'correspondence_preds': correspondence_preds})
+        results_dict.update({'window_preds': window_preds})
 
-        results_dict.update({'correspondence_embedding_preds': correspondence_embedding_preds})
+        results_dict.update({'embedding_preds_A': embedding_preds_A})
+        results_dict.update({'embedding_preds_B': embedding_preds_B})
 
         results_dict.update({'basis': self.basis})
 
