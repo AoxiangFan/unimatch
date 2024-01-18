@@ -1,7 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from .geometry import coords_grid, generate_window_grid, normalize_coords
+from .geometry import coords_grid, generate_window_grid, normalize_coords, coordinate_mapping
+from einops import (rearrange, reduce, repeat)
+import sys
+from torch.nn.functional import normalize
 
 
 def global_correlation_softmax(feature0, feature1,
@@ -35,6 +38,38 @@ def global_correlation_softmax(feature0, feature1,
 
     return flow, prob
 
+def global_correlation_softmax2(feature0, feature1, basis, 
+                               pred_bidir_flow=False,
+                               ):
+    # global correlation
+    b, c, h, w = feature0.shape
+    feature0 = feature0.view(b, c, -1).permute(0, 2, 1)  # [B, H*W, C]
+    feature1 = feature1.view(b, c, -1)  # [B, C, H*W]
+
+    correlation = torch.matmul(feature0, feature1).view(b, h, w, h, w) / (c ** 0.5)  # [B, H, W, H, W]
+
+    # flow from softmax
+    init_grid = coords_grid(b, h, w).to(correlation.device)  # [B, 2, H, W]
+    grid = init_grid.view(b, 2, -1).permute(0, 2, 1)  # [B, H*W, 2]
+
+    correlation = correlation.view(b, h * w, h * w)  # [B, H*W, H*W]
+
+    if pred_bidir_flow:
+        correlation = torch.cat((correlation, correlation.permute(0, 2, 1)), dim=0)  # [2*B, H*W, H*W]
+        init_grid = init_grid.repeat(2, 1, 1, 1)  # [2*B, 2, H, W]
+        grid = grid.repeat(2, 1, 1)  # [2*B, H*W, 2]
+        b = b * 2
+
+    prob = F.softmax(correlation, dim=-1)  # [B, H*W, H*W]
+
+    correspondence = torch.matmul(prob, grid).view(b, h, w, 2).permute(0, 3, 1, 2)  # [B, 2, H, W]
+
+    grid_embedding = coordinate_mapping(grid, basis, h, w)
+    correspondence_embedding = torch.matmul(prob, grid_embedding).view(b, h, w, -1).permute(0, 3, 1, 2)
+
+    correspondence_embedding = normalize(correspondence_embedding, p=2.0, dim=1)
+
+    return correspondence_embedding, prob
 
 def local_correlation_softmax(feature0, feature1, local_radius,
                               padding_mode='zeros',
@@ -81,6 +116,66 @@ def local_correlation_softmax(feature0, feature1, local_radius,
     match_prob = prob
 
     return flow, match_prob
+
+def local_correlation_softmax2(feature0, feature1, local_radius, correspondence_init, basis,
+                              padding_mode='zeros',
+                              ):
+    b, c, h, w = feature0.size()
+    coords_init = coords_grid(b, h, w).to(feature0.device)  # [B, 2, H, W]
+    coords = coords_init.view(b, 2, -1).permute(0, 2, 1)  # [B, H*W, 2]
+
+    local_h = 2 * local_radius + 1
+    local_w = 2 * local_radius + 1
+
+    window_grid = generate_window_grid(-local_radius, local_radius,
+                                       -local_radius, local_radius,
+                                       local_h, local_w, device=feature0.device)  # [2R+1, 2R+1, 2]
+    window_grid = window_grid.reshape(-1, 2).repeat(b, 1, 1, 1)  # [B, 1, (2R+1)^2, 2]
+    sample_coords = coords.unsqueeze(-2) + window_grid  # [B, H*W, (2R+1)^2, 2]
+
+    sample_coords_softmax = sample_coords
+
+    # exclude coords that are out of image space
+    valid_x = (sample_coords[:, :, :, 0] >= 0) & (sample_coords[:, :, :, 0] < w)  # [B, H*W, (2R+1)^2]
+    valid_y = (sample_coords[:, :, :, 1] >= 0) & (sample_coords[:, :, :, 1] < h)  # [B, H*W, (2R+1)^2]
+
+    valid = valid_x & valid_y  # [B, H*W, (2R+1)^2], used to mask out invalid values when softmax
+
+    # normalize coordinates to [-1, 1]
+    sample_coords_norm = normalize_coords(sample_coords, h, w)  # [-1, 1]
+    window_feature = F.grid_sample(feature1, sample_coords_norm,
+                                   padding_mode=padding_mode, align_corners=True
+                                   ).permute(0, 2, 1, 3)  # [B, H*W, C, (2R+1)^2]
+    feature0_view = feature0.permute(0, 2, 3, 1).view(b, h * w, 1, c)  # [B, H*W, 1, C]
+
+    corr = torch.matmul(feature0_view, window_feature).view(b, h * w, -1) / (c ** 0.5)  # [B, H*W, (2R+1)^2]
+
+    # mask invalid locations
+    corr[~valid] = -1e9
+
+    prob = F.softmax(corr, -1)  # [B, H*W, (2R+1)^2]
+
+    correspondence = torch.matmul(prob.unsqueeze(-2), sample_coords_softmax).squeeze(-2).view(
+        b, h, w, 2).permute(0, 3, 1, 2)  # [B, 2, H, W]
+    
+    B, HW, R, c = sample_coords_softmax.shape
+    
+
+    correspondence_init = rearrange(correspondence_init, 'B C H W -> B (H W) 1 C')
+    coords_init = rearrange(coords_init, 'B C H W -> B (H W) 1 C')
+
+    grid_embedding = coordinate_mapping(rearrange(sample_coords_softmax - coords_init + local_radius, 'B E R c -> B (E R) c'), basis, local_h, local_w)
+    grid_embedding = rearrange(grid_embedding, ' B (E R) c -> B E R c', B=B, E=HW, R=R)
+
+    # correspondence_embedding = torch.matmul(prob, grid_embedding).view(b, h, w, -1).permute(0, 3, 1, 2)
+    flow_embedding = torch.matmul(prob.unsqueeze(-2), grid_embedding).squeeze(-2).view(
+        b, h, w, -1).permute(0, 3, 1, 2)
+    
+    flow_embedding = normalize(flow_embedding, p=2.0, dim=1)
+
+    match_prob = prob
+
+    return flow_embedding, match_prob, (local_h, local_w, local_radius)
 
 
 def local_correlation_with_flow(feature0, feature1,
