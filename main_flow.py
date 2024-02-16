@@ -9,7 +9,7 @@ import os
 from dataloader.flow.datasets import build_train_dataset
 from unimatch.unimatch import UniMatch
 from unimatch.flowmatch import FlowMatch
-from loss.flow_loss import flow_loss_func, flow_loss_func2
+from loss.flow_loss import flow_loss_func
 
 from evaluate_flow import (validate_chairs, validate_things, validate_sintel, validate_kitti,
                            create_kitti_submission, create_sintel_submission,
@@ -427,12 +427,8 @@ def main(args):
                                  )
 
             flow_preds = results_dict['flow_preds']
-            embedding_preds = results_dict['embedding_preds']
-            norms = results_dict['norms']
-            flow_intermediate = results_dict['flow_intermediate']
-            basis = results_dict['basis']
 
-            loss, metrics = flow_loss_func2(flow_preds, embedding_preds, norms, flow_intermediate, basis, flow_gt, valid,
+            loss, metrics = flow_loss_func(flow_preds, flow_gt, valid,
                                            gamma=args.gamma,
                                            max_flow=args.max_flow,
                                            )

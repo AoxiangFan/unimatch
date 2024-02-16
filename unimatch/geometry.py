@@ -200,22 +200,20 @@ def compute_flow_with_depth_pose(depth_ref, intrinsics,
     return rigid_flow
 
 
-def coordinate_mapping(coordinates, basis, h, w):
+def coordinate_mapping(coordinates, encoder, norm):
 
-    norm_factor = 1 / torch.tensor([w, h])
+    norm_factor = 1 / torch.tensor([norm[1], norm[0]])
     norm_factor = norm_factor.to(coordinates.device)
-    normalized_coordinates = coordinates * norm_factor[None, None, ...]
-    coordinate_embedding = 2 * PI * normalized_coordinates[..., None] @ basis
-    coordinate_embedding = normalize(torch.cat([torch.sin(coordinate_embedding), torch.cos(coordinate_embedding)], dim=-1), p=2.0, dim=3)
-    coordinate_embedding = rearrange(coordinate_embedding, 'B K c d -> B K (c d)')
+    normalized_coordinates = (coordinates + norm[2]) * norm_factor[None, None, ...]
+
+    coordinate_embedding = encoder(normalized_coordinates)
 
     return coordinate_embedding
 
-def embedding_decode(embedding, decoder, dimension, norm):
+def embedding_decode(embedding, decoder, norm):
+
     B, C, H, W = embedding.shape
-    decoded_coordinate_1 = decoder(rearrange(embedding, 'B C H W -> (B H W) C')[:, 0:dimension])
-    decoded_coordinate_2 = decoder(rearrange(embedding, 'B C H W -> (B H W) C')[:, dimension:])
-    decoded_coordinate = torch.cat((decoded_coordinate_1, decoded_coordinate_2), dim=1)
+    decoded_coordinate = decoder(rearrange(embedding, 'B C H W -> (B H W) C'))
     denorm_factor = torch.tensor([norm[1], norm[0]])
     denorm_factor = denorm_factor.to(decoded_coordinate.device)
     decoded_coordinate = decoded_coordinate * denorm_factor[None, :] - norm[2]

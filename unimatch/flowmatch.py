@@ -12,16 +12,31 @@ from .geometry import flow_warp, compute_flow_with_depth_pose, embedding_decode,
 from .reg_refine import BasicUpdateBlock
 from .utils import normalize_img, feature_add_position, upsample_flow_with_mask
 
+from torch.nn.functional import normalize
+
 class DecoderMLP(nn.Module):
-    def __init__(self, input_dim=128):
+    def __init__(self, input_dim=128, output_dim=2):
         super(DecoderMLP, self).__init__()
         self.MLP = nn.Sequential(
-                nn.Linear(input_dim, input_dim), nn.ReLU(inplace=True),
                 nn.Linear(input_dim, input_dim // 2), nn.ReLU(inplace=True),
-                nn.Linear(input_dim // 2, 1), nn.Sigmoid())
+                nn.Linear(input_dim // 2, input_dim // 4), nn.ReLU(inplace=True),
+                nn.Linear(input_dim // 4, output_dim), nn.Sigmoid())
 
     def forward(self, x):
         return self.MLP(x)
+    
+class EncoderMLP(nn.Module):
+    def __init__(self, input_dim=2, output_dim=128):
+        super(EncoderMLP, self).__init__()
+        self.MLP = nn.Sequential(
+                nn.Linear(input_dim, output_dim // 4), nn.ReLU(inplace=True),
+                nn.Linear(output_dim // 4, output_dim // 2), nn.ReLU(inplace=True),
+                nn.Linear(output_dim // 2, output_dim), nn.ReLU(inplace=True))
+
+    def forward(self, x):
+
+        x = self.MLP(x)
+        return x
 
 class FlowMatch(nn.Module):
     def __init__(self,
@@ -70,14 +85,10 @@ class FlowMatch(nn.Module):
                                            flow_dim=2 if task == 'flow' else 1,
                                            bilinear_up=task == 'depth',
                                            )
-            
-        coordinate_embedding_decoder = torch.load("/scratch/cvlab/home/afan/projects/unimatch/decoder/color_embedding_decoder.pth")
-        self.basis = coordinate_embedding_decoder['basis'].to("cuda")
-        self.embedding_dimension = coordinate_embedding_decoder['embedding_dimension']
-        self.coordinateEmbeddingDecoder = DecoderMLP(input_dim=self.embedding_dimension)
-        self.coordinateEmbeddingDecoder.load_state_dict(coordinate_embedding_decoder['model_state_dict'])
-        for param in self.coordinateEmbeddingDecoder.parameters():
-            param.requires_grad = False
+
+        self.embedding_dimension = 64
+        self.coordinateEmbeddingEncoder = EncoderMLP(input_dim=2, output_dim=self.embedding_dimension)
+        self.coordinateEmbeddingDecoder = DecoderMLP(input_dim=self.embedding_dimension, output_dim=2)
 
     def extract_feature(self, img0, img1):
         concat = torch.cat((img0, img1), dim=0)  # [2B, C, H, W]
@@ -130,9 +141,6 @@ class FlowMatch(nn.Module):
 
         results_dict = {}
         flow_preds = []
-        embedding_preds = []
-        norms = []
-        flow_intermediate = []
 
         # stereo and depth tasks have normalized img in dataloader
         img0, img1 = normalize_img(img0, img1)  # [B, 3, H, W]
@@ -149,7 +157,6 @@ class FlowMatch(nn.Module):
 
             if scale_idx > 0:
                 flow = F.interpolate(flow, scale_factor=2, mode='bilinear', align_corners=True) * 2
-                flow_intermediate.append(flow.detach())
 
             if flow is not None:
                 flow = flow.detach()
@@ -170,18 +177,14 @@ class FlowMatch(nn.Module):
 
             # correlation and softmax
             if corr_radius == -1:  # global matching
-                correspondence_embedding = global_correlation_softmax2(feature0, feature1, self.basis, pred_bidir_flow)[0]
-                embedding_preds.append(correspondence_embedding)
+                correspondence_embedding = global_correlation_softmax2(feature0, feature1, self.coordinateEmbeddingEncoder, pred_bidir_flow)[0]
                 b, c, h, w = feature0.size()
-                norms.append((h, w, 0))
-                correspondence = embedding_decode(correspondence_embedding, self.coordinateEmbeddingDecoder, self.embedding_dimension, (h, w, 0))
+                correspondence = embedding_decode(correspondence_embedding, self.coordinateEmbeddingDecoder, (h, w, 0))
                 init_grid = coords_grid(b, h, w).to(correspondence.device) 
                 flow_pred = correspondence - init_grid
             else:  # local matching
-                flow_embedding, _, norm = local_correlation_softmax2(feature0, feature1, corr_radius, correspondence, self.basis)
-                embedding_preds.append(flow_embedding)
-                norms.append(norm)
-                flow_pred = embedding_decode(flow_embedding, self.coordinateEmbeddingDecoder, self.embedding_dimension, norm)
+                flow_embedding, _, norm = local_correlation_softmax2(feature0, feature1, corr_radius, correspondence, self.coordinateEmbeddingEncoder)
+                flow_pred = embedding_decode(flow_embedding, self.coordinateEmbeddingDecoder, norm)
 
             flow = flow + flow_pred if flow is not None else flow_pred
 
@@ -209,13 +212,5 @@ class FlowMatch(nn.Module):
                 flow_preds.append(flow_up)
 
         results_dict.update({'flow_preds': flow_preds})
-
-        results_dict.update({'embedding_preds': embedding_preds})
-
-        results_dict.update({'norms': norms})
-
-        results_dict.update({'flow_intermediate': flow_intermediate})
-
-        results_dict.update({'basis': self.basis})
 
         return results_dict

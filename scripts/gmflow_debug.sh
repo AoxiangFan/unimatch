@@ -29,74 +29,74 @@ python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=99
 --num_steps 100000 \
 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
 
-# # things (our final model is trained for 800K iterations, for ablation study, you can train for 200K)
-# CHECKPOINT_DIR=debug/things-gmflow-scale2 && \
-# mkdir -p ${CHECKPOINT_DIR} && \
-# python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
-# --launcher pytorch \
-# --checkpoint_dir ${CHECKPOINT_DIR} \
-# --resume debug/chairs-gmflow-scale2/step_100000.pth \
-# --stage things \
-# --batch_size 8 \
-# --val_dataset things sintel kitti \
-# --lr 2e-4 \
-# --image_size 384 768 \
-# --padding_factor 32 \
-# --upsample_factor 4 \
-# --num_scales 2 \
-# --attn_splits_list 2 8 \
-# --corr_radius_list -1 4 \
-# --prop_radius_list -1 1 \
-# --with_speed_metric \
-# --val_freq 40000 \
-# --save_ckpt_freq 50000 \
-# --num_steps 800000 \
-# 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
+# things (our final model is trained for 800K iterations, for ablation study, you can train for 200K)
+CHECKPOINT_DIR=debug/things-gmflow-scale2 && \
+mkdir -p ${CHECKPOINT_DIR} && \
+python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
+--launcher pytorch \
+--checkpoint_dir ${CHECKPOINT_DIR} \
+--resume debug/chairs-gmflow-scale2/step_100000.pth \
+--stage things \
+--batch_size 8 \
+--val_dataset things sintel kitti \
+--lr 2e-4 \
+--image_size 384 768 \
+--padding_factor 32 \
+--upsample_factor 4 \
+--num_scales 2 \
+--attn_splits_list 2 8 \
+--corr_radius_list -1 4 \
+--prop_radius_list -1 1 \
+--with_speed_metric \
+--val_freq 40000 \
+--save_ckpt_freq 50000 \
+--num_steps 800000 \
+2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
 
-# # sintel
-# CHECKPOINT_DIR=debug/sintel-gmflow-scale2 && \
-# mkdir -p ${CHECKPOINT_DIR} && \
-# python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
-# --launcher pytorch \
-# --checkpoint_dir ${CHECKPOINT_DIR} \
-# --resume debug/things-gmflow-scale2/step_800000.pth \
-# --stage sintel \
-# --batch_size 8 \
-# --val_dataset sintel kitti \
-# --lr 2e-4 \
-# --image_size 320 896 \
-# --padding_factor 32 \
-# --upsample_factor 4 \
-# --num_scales 2 \
-# --attn_splits_list 2 8 \
-# --corr_radius_list -1 4 \
-# --prop_radius_list -1 1 \
-# --with_speed_metric \
-# --val_freq 20000 \
-# --save_ckpt_freq 20000 \
-# --num_steps 200000 \
-# 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
+# sintel
+CHECKPOINT_DIR=debug/sintel-gmflow-scale2 && \
+mkdir -p ${CHECKPOINT_DIR} && \
+python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
+--launcher pytorch \
+--checkpoint_dir ${CHECKPOINT_DIR} \
+--resume debug/things-gmflow-scale2/step_800000.pth \
+--stage sintel \
+--batch_size 8 \
+--val_dataset sintel kitti \
+--lr 2e-4 \
+--image_size 320 896 \
+--padding_factor 32 \
+--upsample_factor 4 \
+--num_scales 2 \
+--attn_splits_list 2 8 \
+--corr_radius_list -1 4 \
+--prop_radius_list -1 1 \
+--with_speed_metric \
+--val_freq 20000 \
+--save_ckpt_freq 20000 \
+--num_steps 200000 \
+2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
 
-# # kitti
-# CHECKPOINT_DIR=debug/kitti-gmflow-scale2 && \
-# mkdir -p ${CHECKPOINT_DIR} && \
-# python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
-# --launcher pytorch \
-# --checkpoint_dir ${CHECKPOINT_DIR} \
-# --resume debug/sintel-gmflow-scale2/step_200000.pth \
-# --stage kitti \
-# --batch_size 8 \
-# --val_dataset kitti \
-# --lr 2e-4 \
-# --image_size 320 1152 \
-# --padding_factor 32 \
-# --upsample_factor 4 \
-# --num_scales 2 \
-# --attn_splits_list 2 8 \
-# --corr_radius_list -1 4 \
-# --prop_radius_list -1 1 \
-# --with_speed_metric \
-# --val_freq 10000 \
-# --save_ckpt_freq 10000 \
-# --num_steps 100000 \
-# 2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
+# kitti
+CHECKPOINT_DIR=debug/kitti-gmflow-scale2 && \
+mkdir -p ${CHECKPOINT_DIR} && \
+python -m torch.distributed.launch --nproc_per_node=${NUM_GPUS} --master_port=9989 main_flow.py \
+--launcher pytorch \
+--checkpoint_dir ${CHECKPOINT_DIR} \
+--resume debug/sintel-gmflow-scale2/step_200000.pth \
+--stage kitti \
+--batch_size 8 \
+--val_dataset kitti \
+--lr 2e-4 \
+--image_size 320 1152 \
+--padding_factor 32 \
+--upsample_factor 4 \
+--num_scales 2 \
+--attn_splits_list 2 8 \
+--corr_radius_list -1 4 \
+--prop_radius_list -1 1 \
+--with_speed_metric \
+--val_freq 10000 \
+--save_ckpt_freq 10000 \
+--num_steps 100000 \
+2>&1 | tee -a ${CHECKPOINT_DIR}/train.log
